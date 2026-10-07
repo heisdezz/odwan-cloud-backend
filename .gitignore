@@ -1,0 +1,36 @@
+# Credentials and local configuration
+auth_cred*
+app-cred.ts
+s3_key.ts
+.env
+.env.*
+!.env.example
+/config.json
+
+# PocketBase databases and local upload state
+/pb_data/
+/storage/
+**/.s3-uploads/
+**/.s3-hashes/
+**/.s3-test-inputs/
+
+# Go build and test artifacts
+/go-test
+/s3-upload
+/bin/
+/dist/
+*.test
+*.prof
+/coverage.out
+/coverage.html
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Telegram metadata and upload checkpoints
+**/.telegram/

@@ -1,0 +1,23 @@
+{
+  "storage_path": "./storage",
+  "s3": {
+    "endpoint": "https://s3.eu-central-003.backblazeb2.com",
+    "region": "eu-central-003",
+    "bucket": "odw-cloud",
+    "part_size": 8388608,
+    "concurrency": 4
+  },
+  "key_data": {
+    "keyID": "your-key-id",
+    "applicationKey": "your-application-key"
+  },
+  "test_token": "local-test",
+  "telegram": {
+    "bot_token": "your-telegram-bot-token",
+    "chat_id": "your-numeric-chat-id",
+    "bucket": "telegram",
+    "chunk_size": 8388608,
+    "max_file_size": 268435456
+  },
+  "storage_backend": "telegram"
+}

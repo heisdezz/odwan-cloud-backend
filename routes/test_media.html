@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test uploads · Media viewer</title>
+<style nonce="{{nonce}}">
+:root{color-scheme:dark;--bg:#161b20;--surface:#20272e;--text:#eef2f4;--muted:#b4c0c9;--line:#46515b;--accent:#b7e1d1;--ink:#16352a;font-family:system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}main{max-width:1180px;margin:auto;padding:40px 28px 60px}h1{font-size:clamp(1.8rem,4vw,2.8rem);margin:0 0 8px;letter-spacing:-.025em}p{line-height:1.6;max-width:70ch;color:var(--muted);margin:0 0 24px}button,input{font:inherit}button,a{touch-action:manipulation}button{cursor:pointer;background:var(--accent);color:var(--ink);border:0;border-radius:8px;padding:11px 17px;font-weight:650}button:hover{background:#d0eee3}button:disabled{opacity:.5;cursor:wait}input{min-width:0;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:11px 13px;caret-color:var(--accent)}input::placeholder{color:var(--muted)}:focus-visible{outline:3px solid var(--accent);outline-offset:4px}::selection{background:var(--accent);color:var(--ink)}a{color:var(--accent);text-underline-offset:4px}label{display:block;margin-bottom:8px;font-weight:600}.login{max-width:620px;margin:28px 0}.fields{display:flex;gap:12px}.fields input{flex:1}.toolbar{display:flex;align-items:center;gap:12px;justify-content:space-between;margin:32px 0 18px}.toolbar span{color:var(--muted)}.secondary{background:transparent;color:var(--text);border:1px solid var(--line)}.secondary:hover{background:var(--surface)}.layout{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);gap:28px}.library{min-width:0}.files{list-style:none;padding:0;margin:0;max-height:560px;overflow:auto;scrollbar-color:var(--line) var(--bg);scrollbar-width:thin}.files li{border-bottom:1px solid var(--line)}.files button{display:block;width:100%;text-align:left;background:transparent;color:var(--text);border-radius:0;padding:16px 12px;font-weight:500}.files button:hover,.files button[aria-current="true"]{background:var(--surface)}.files button[aria-current="true"]{box-shadow:inset 0 -2px var(--accent)}.filename{display:block;overflow-wrap:anywhere}.details{display:block;font-size:.82rem;color:var(--muted);margin-top:7px;font-variant-numeric:tabular-nums}.stage{min-width:0}.screen{background:#0b0e11;min-height:260px;display:grid;place-items:center;overflow:hidden;border-radius:12px}.screen video,.screen img{display:block;width:100%;max-height:620px;object-fit:contain}.screen audio{width:calc(100% - 40px)}.placeholder{text-align:center;padding:30px;margin:0}.now{font-size:1.15rem;margin:18px 0 8px;overflow-wrap:anywhere}.meta{margin:0 0 14px;font-size:.9rem;font-variant-numeric:tabular-nums}.status{min-height:24px;margin-top:16px;color:var(--muted)}.status.error{color:#ffb6ad}.more{margin-top:16px;width:100%}[hidden]{display:none!important}@media(max-width:720px){main{padding:28px 18px}.layout{grid-template-columns:1fr}.stage{grid-row:1}.files{max-height:300px}.toolbar{align-items:flex-start}.fields{flex-wrap:wrap}.fields input{flex-basis:100%}.screen{min-height:200px}}@media(prefers-reduced-motion:no-preference){button{transition:background-color 150ms ease-out}}
+</style>
+</head>
+<body>
+<main>
+<h1>Test uploads</h1>
+<p>View your uploaded images, play audio and video, and try seeking through a video.</p>
+<form id="login" class="login">
+<label for="token">Test token</label>
+<div class="fields"><input id="token" type="password" autocomplete="off" required placeholder="Enter your configured test token"><button id="connect" type="submit">Connect</button></div>
+</form>
+<div id="workspace" hidden>
+<div class="toolbar"><span id="count">Loading uploads…</span><div><button id="refresh" class="secondary" type="button">Refresh</button> <button id="disconnect" class="secondary" type="button">Disconnect</button></div></div>
+<div class="layout">
+<aside class="library" aria-label="Uploaded files"><ul id="files" class="files"></ul><button id="more" class="secondary more" type="button" hidden>Load more</button></aside>
+<section class="stage" aria-label="Media preview"><div id="screen" class="screen"><p class="placeholder">Choose an upload to view it.</p></div><h2 id="name" class="now" hidden></h2><p id="meta" class="meta"></p><a id="download" hidden download>Download original</a></section>
+</div>
+</div>
+<div id="status" class="status" role="status" aria-live="polite"></div>
+</main>
+<script nonce="{{nonce}}">
+'use strict';
+const base='/api/test/media';
+const $=id=>document.getElementById(id);
+let items=[],next=null,current=null;
+const requested=new URLSearchParams(location.search).get('id');
+function message(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error)}
+function size(bytes){return new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(bytes/1048576)+' MB'}
+function stop(){const media=$('screen').querySelector('video,audio');if(media){media.pause();media.removeAttribute('src');media.load()}$('screen').replaceChildren()}
+function requireLogin(){stop();$('workspace').hidden=true;$('login').hidden=false;$('token').focus()}
+async function api(url,options={}){const response=await fetch(url,{credentials:'same-origin',...options});if(!response.ok){let error='Could not complete the request. Try again.';try{error=(await response.json()).error||error}catch{}if(response.status===401)requireLogin();throw new Error(error)}return response.status===204?null:response.json()}
+function choose(item){stop();current=item;document.querySelectorAll('#files button').forEach(button=>button.setAttribute('aria-current',String(button.dataset.id===item.id)));$('name').textContent=item.name;$('name').hidden=false;$('meta').textContent=[item.mime_type,size(item.size_bytes),item.backend].join(' · ');$('download').href=item.stream_url;$('download').hidden=false;
+ let element;
+ if(item.mime_type.startsWith('video/')){element=document.createElement('video');element.controls=true;element.preload='metadata';element.playsInline=true}
+ else if(item.mime_type.startsWith('audio/')){element=document.createElement('audio');element.controls=true;element.preload='metadata'}
+ else if(item.mime_type.startsWith('image/')){element=document.createElement('img');element.alt=item.name}
+ else{element=document.createElement('p');element.className='placeholder';element.textContent='Preview is unavailable for this file type. Download the original to open it.'}
+ if(element.tagName!=='P'){element.src=item.stream_url;element.addEventListener('error',async()=>{if(current?.id!==item.id)return;let text='Could not play or display this file. Your browser may not support its format. Try downloading the original.';try{const response=await fetch(item.stream_url,{method:'HEAD',credentials:'same-origin'});if(response.status===401){requireLogin();text='Your viewing session expired. Connect again to continue.'}else if(!response.ok){text='The stored file is unavailable. Refresh the uploads and try again.'}}catch{text='Could not reach the server. Check your connection and try again.'}message(text,true)})}
+ $('screen').append(element);message('');
+}
+function render(){const list=$('files');list.replaceChildren();for(const item of items){const li=document.createElement('li');const button=document.createElement('button');button.type='button';button.dataset.id=item.id;button.setAttribute('aria-current',String(current?.id===item.id));const name=document.createElement('span');name.className='filename';name.textContent=item.name;const detail=document.createElement('span');detail.className='details';detail.textContent=item.mime_type+' · '+size(item.size_bytes);button.append(name,detail);button.addEventListener('click',()=>choose(item));li.append(button);list.append(li)}$('count').textContent=items.length+' upload'+(items.length===1?'':'s');$('more').hidden=next===null;if(!items.length){stop();$('name').hidden=true;$('meta').textContent='';$('download').hidden=true;const empty=document.createElement('p');empty.className='placeholder';empty.textContent='No uploads yet. Upload a file with the test upload endpoint, then refresh.';$('screen').append(empty)}}
+async function load(append=false){$('refresh').disabled=true;$('more').disabled=true;message('Loading uploads…');try{const result=await api(base+(append?'?offset='+next:''));items=append?items.concat(result.items):result.items;next=result.next_offset;$('workspace').hidden=false;$('login').hidden=true;render();if(items.length&&!append){choose(items.find(item=>item.id===(requested||current?.id))||items[0])}message('')}catch(error){message(error.message,true)}finally{$('refresh').disabled=false;$('more').disabled=false}}
+$('login').addEventListener('submit',async event=>{event.preventDefault();$('connect').disabled=true;try{await api(base+'/session',{method:'POST',headers:{'X-S3-Test-Token':$('token').value}});$('token').value='';await load()}catch(error){message(error.message,true)}finally{$('token').value='';$('connect').disabled=false}});
+$('refresh').addEventListener('click',()=>load());$('more').addEventListener('click',()=>load(true));$('disconnect').addEventListener('click',async()=>{try{await api(base+'/session',{method:'DELETE'});items=[];current=null;requireLogin();message('Disconnected.')}catch(error){message(error.message,true)}});
+load();
+</script>
+</body>
+</html>
