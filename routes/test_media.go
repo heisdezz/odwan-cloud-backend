@@ -51,7 +51,7 @@ func testMediaAuthorized(request *http.Request, token string) bool {
 	}
 	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(testMediaSessionValue(token, expires))) == 1
 }
-func registerTestMediaRoutes(se *core.ServeEvent, token string, stream func(*core.RequestEvent) error) {
+func registerTestMediaRoutes(se *core.ServeEvent, token string, stream, thumbnail func(*core.RequestEvent) error) {
 	if token == "" {
 		return
 	}
@@ -64,7 +64,7 @@ func registerTestMediaRoutes(se *core.ServeEvent, token string, stream func(*cor
 		e.Response.Header().Set("Content-Type", "text/html; charset=utf-8")
 		e.Response.Header().Set("Cache-Control", "no-store")
 		e.Response.Header().Set("Referrer-Policy", "no-referrer")
-		e.Response.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'none'; script-src 'nonce-%s'; style-src 'nonce-%s'; connect-src 'self'; media-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'", nonce, nonce))
+		e.Response.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'none'; script-src 'nonce-%s'; style-src 'nonce-%s'; connect-src 'self'; media-src 'self'; img-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'", nonce, nonce))
 		_, err := e.Response.Write([]byte(strings.ReplaceAll(testMediaPage, "{{nonce}}", nonce)))
 		return err
 	})
@@ -102,7 +102,7 @@ func registerTestMediaRoutes(se *core.ServeEvent, token string, stream func(*cor
 		}
 		items := make([]map[string]any, 0, len(records))
 		for _, record := range records {
-			items = append(items, map[string]any{"id": record.Id, "name": path.Base(strings.ReplaceAll(record.GetString("original_relative_path"), "\\", "/")), "mime_type": record.GetString("mime_type"), "size_bytes": record.GetInt("file_size"), "backend": record.GetString("storage_backend"), "stream_url": testMediaPrefix + "/" + record.Id + "/stream"})
+			items = append(items, map[string]any{"id": record.Id, "name": path.Base(strings.ReplaceAll(record.GetString("original_relative_path"), "\\", "/")), "mime_type": record.GetString("mime_type"), "size_bytes": record.GetInt("file_size"), "backend": record.GetString("storage_backend"), "stream_url": testMediaPrefix + "/" + record.Id + "/stream", "thumbnail_url": testMediaPrefix + "/" + record.Id + "/thumb", "thumbs": record.GetString("thumbs")})
 		}
 		var nextOffset any
 		if len(records) == 50 {
@@ -110,18 +110,33 @@ func registerTestMediaRoutes(se *core.ServeEvent, token string, stream func(*cor
 		}
 		return e.JSON(200, map[string]any{"items": items, "next_offset": nextOffset})
 	})
-	viewerStream := func(e *core.RequestEvent) error {
-		if !testMediaAuthorized(e.Request, token) {
-			return e.JSON(401, map[string]string{"error": "Test viewing session expired; reconnect on the view page"})
+	viewerHandler := func(handler func(*core.RequestEvent) error) func(*core.RequestEvent) error {
+		return func(e *core.RequestEvent) error {
+			if !testMediaAuthorized(e.Request, token) {
+				return e.JSON(401, map[string]string{"error": "Test viewing session expired; reconnect on the view page"})
+			}
+			// A viewing cookie grants access only to test objects, never other library media.
+			record, err := e.App.FindRecordById("media_item", e.Request.PathValue("id"))
+			if err != nil || !strings.HasPrefix(record.GetString("storage_key"), "tests/") {
+				return e.NotFoundError("Test media not found", nil)
+			}
+			e.Request.Header.Set("X-S3-Test-Token", token)
+			return handler(e)
 		}
-		// A viewing cookie grants access only to test objects, never other library media.
+	}
+	se.Router.GET(testMediaPrefix+"/{id}/stream", viewerHandler(stream))
+	se.Router.HEAD(testMediaPrefix+"/{id}/stream", viewerHandler(stream))
+	se.Router.GET(testMediaPrefix+"/{id}/thumb", publicTestThumbnail(thumbnail))
+	se.Router.HEAD(testMediaPrefix+"/{id}/thumb", publicTestThumbnail(thumbnail))
+}
+
+// Public preview route, limited to test objects; the original stream stays authorized.
+func publicTestThumbnail(handler func(*core.RequestEvent) error) func(*core.RequestEvent) error {
+	return func(e *core.RequestEvent) error {
 		record, err := e.App.FindRecordById("media_item", e.Request.PathValue("id"))
 		if err != nil || !strings.HasPrefix(record.GetString("storage_key"), "tests/") {
 			return e.NotFoundError("Test media not found", nil)
 		}
-		e.Request.Header.Set("X-S3-Test-Token", token)
-		return stream(e)
+		return handler(e)
 	}
-	se.Router.GET(testMediaPrefix+"/{id}/stream", viewerStream)
-	se.Router.HEAD(testMediaPrefix+"/{id}/stream", viewerStream)
 }

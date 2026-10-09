@@ -1,6 +1,7 @@
 export interface MediaItem {
   id: string;
   file_hash: string;
+  thumbs?: string; // PocketBase thumbnail filename; empty until requested.
   storage_backend?: "telegram" | "s3" | "";
   storage_bucket?: string;
   storage_key?: string;

@@ -67,7 +67,7 @@ func Album_Count(app core.App) {
 		return originalApp.RunInTransaction(func(tx core.App) error {
 			e.App = tx
 			var count int
-			if err := tx.DB().NewQuery("SELECT COUNT(*) FROM media_item WHERE album_id = {:id}").Bind(dbx.Params{"id": e.Record.Id}).Row(&count); err != nil {
+			if err := tx.DB().NewQuery("SELECT COUNT(*) FROM media_item WHERE album_id = {:id} AND trashed_at = 0").Bind(dbx.Params{"id": e.Record.Id}).Row(&count); err != nil {
 				return err
 			}
 			e.Record.Set("media_count", count)
@@ -91,8 +91,13 @@ func recountAlbums(app core.App, ids ...string) error {
 			continue
 		}
 		seen[id] = true
-		if _, err := app.NonconcurrentDB().NewQuery(`UPDATE album SET media_count = (SELECT COUNT(*) FROM media_item WHERE album_id = {:id}) WHERE id = {:id}`).Bind(dbx.Params{"id": id}).Execute(); err != nil {
+		if _, err := app.NonconcurrentDB().NewQuery(`UPDATE album SET media_count = (SELECT COUNT(*) FROM media_item WHERE album_id = {:id} AND trashed_at = 0) WHERE id = {:id}`).Bind(dbx.Params{"id": id}).Execute(); err != nil {
 			return fmt.Errorf("recount album %s: %w", id, err)
+		}
+		if _, err := app.NonconcurrentDB().NewQuery(`UPDATE album SET cover_media_id = COALESCE(
+          (SELECT id FROM media_item WHERE id=album.cover_media_id AND album_id={:id} AND trashed_at=0),
+          (SELECT id FROM media_item WHERE album_id={:id} AND trashed_at=0 ORDER BY created_at DESC,id DESC LIMIT 1),'') WHERE id={:id}`).Bind(dbx.Params{"id": id}).Execute(); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -133,6 +138,6 @@ func initializeAlbums(app core.App) error {
 	if _, err := app.NonconcurrentDB().NewQuery(`UPDATE media_item SET album_id = {:id} WHERE album_id = '' OR album_id IS NULL OR NOT EXISTS (SELECT 1 FROM album WHERE album.id = media_item.album_id)`).Bind(dbx.Params{"id": UnsortedAlbumID}).Execute(); err != nil {
 		return err
 	}
-	_, err = app.NonconcurrentDB().NewQuery(`UPDATE album SET media_count = (SELECT COUNT(*) FROM media_item WHERE media_item.album_id = album.id)`).Execute()
+	_, err = app.NonconcurrentDB().NewQuery(`UPDATE album SET media_count = (SELECT COUNT(*) FROM media_item WHERE media_item.album_id = album.id AND trashed_at = 0)`).Execute()
 	return err
 }

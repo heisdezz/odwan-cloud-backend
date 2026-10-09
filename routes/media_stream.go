@@ -27,9 +27,10 @@ type objectStreamer interface {
 }
 
 type storageRegistry struct {
-	mutex   sync.Mutex
-	config  s3.Config
-	clients map[string]fileUploader
+	mutex     sync.Mutex
+	lifecycle sync.Mutex
+	config    s3.Config
+	clients   map[string]fileUploader
 }
 
 func (r *storageRegistry) get(backend string) (fileUploader, error) {
@@ -73,28 +74,11 @@ func mediaStreamHandler(resolve func(string) (objectStreamer, error), testToken 
 		if err != nil {
 			return err
 		}
-		testAccess := testToken != "" && strings.HasPrefix(record.GetString("storage_key"), "tests/") && subtle.ConstantTimeCompare([]byte(e.Request.Header.Get("X-S3-Test-Token")), []byte(testToken)) == 1
-		if !testAccess {
-			info, err := e.RequestInfo()
-			if err != nil {
-				return err
-			}
-			accessInfo := *info
-			if token := e.Request.URL.Query().Get("token"); token != "" && info.Auth == nil {
-				auth, _ := e.App.FindAuthRecordByToken(token, core.TokenTypeFile)
-				if auth != nil && auth.IsSuperuser() && len(e.App.Settings().SuperuserIPs) > 0 && !streamIPAllowed(e.RealIP(), e.App.Settings().SuperuserIPs) {
-					auth = nil
-				}
-				accessInfo.Auth = auth
-				accessInfo.Context = core.RequestInfoContextProtectedFile
-			}
-			allowed, err := e.App.CanAccessRecord(record, &accessInfo, record.Collection().ViewRule)
-			if err != nil {
-				return err
-			}
-			if !allowed {
-				return e.NotFoundError("Media not found", nil)
-			}
+		if record.GetInt("trashed_at") > 0 {
+			return e.NotFoundError("Media is in trash", nil)
+		}
+		if err := authorizeMedia(e, record, testToken); err != nil {
+			return err
 		}
 		backend, bucket, key := record.GetString("storage_backend"), record.GetString("storage_bucket"), record.GetString("storage_key")
 		if record.GetString("upload_status") != "success" || backend == "" || bucket == "" || key == "" {
@@ -116,6 +100,34 @@ func mediaStreamHandler(resolve func(string) (objectStreamer, error), testToken 
 		}
 		return serveMedia(e, client, bucket, key, record.GetString("original_relative_path"), record.GetString("mime_type"), stat)
 	}
+}
+
+// Shared by streaming and thumbnail routes so private media has identical access rules.
+func authorizeMedia(e *core.RequestEvent, record *core.Record, testToken string) error {
+	testAccess := testToken != "" && strings.HasPrefix(record.GetString("storage_key"), "tests/") && subtle.ConstantTimeCompare([]byte(e.Request.Header.Get("X-S3-Test-Token")), []byte(testToken)) == 1
+	if !testAccess {
+		info, err := e.RequestInfo()
+		if err != nil {
+			return err
+		}
+		accessInfo := *info
+		if token := e.Request.URL.Query().Get("token"); token != "" && info.Auth == nil {
+			auth, _ := e.App.FindAuthRecordByToken(token, core.TokenTypeFile)
+			if auth != nil && auth.IsSuperuser() && len(e.App.Settings().SuperuserIPs) > 0 && !streamIPAllowed(e.RealIP(), e.App.Settings().SuperuserIPs) {
+				auth = nil
+			}
+			accessInfo.Auth = auth
+			accessInfo.Context = core.RequestInfoContextProtectedFile
+		}
+		allowed, err := e.App.CanAccessRecord(record, &accessInfo, record.Collection().ViewRule)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return e.NotFoundError("Media not found", nil)
+		}
+	}
+	return nil
 }
 
 func serveMedia(e *core.RequestEvent, client objectStreamer, bucket, key, filename, contentType string, stat s3.StreamInfo) error {

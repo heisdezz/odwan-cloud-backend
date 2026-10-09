@@ -177,6 +177,11 @@ func TestS3TestRoutesDisabledByDefault(t *testing.T) {
 	if err := RegisterStorageRoutes(&core.ServeEvent{App: app, Router: r}, s3.Config{}); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := app.OnTerminate().Trigger(&core.TerminateEvent{App: app}); err != nil {
+			t.Error(err)
+		}
+	})
 	if r.HasRoute("POST", "/api/test/s3/upload") {
 		t.Fatal("test uploads unexpectedly enabled")
 	}

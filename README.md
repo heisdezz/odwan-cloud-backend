@@ -294,3 +294,19 @@ Automated tests use temporary databases and fake storage clients; they do not up
 | Upload returns 502 | Inspect the server log for the storage error, then retry the same unchanged file and key |
 | Video loads but cannot play | Check browser codec support and try downloading the original |
 | Startup fails while upgrading album names | Resolve duplicate names, including case-only duplicates, before restarting |
+
+## Thumbnails
+
+Install FFmpeg (`sudo apt install ffmpeg` on Ubuntu). Startup adds a public `thumbs` file field to `media_item`. `GET /api/media/{id}/thumb` creates a missing image/video preview on demand and caches the JPEG in PocketBase storage. Thumbnail URLs require no token. Original streaming keeps its existing permissions. The test viewer loads video posters through `/api/test/media/{id}/thumb`.
+
+Generation uses one worker, one FFmpeg thread, a 320×320 size limit, and a 45-second timeout. Concurrent uncached requests return 503 with `Retry-After: 2`; failed files have a five-minute retry delay. Cached files need no decoder or remote reads. Split Telegram videos are read using byte ranges, without a merged temporary video. Source changes invalidate the thumbnail; no cron job is needed. See [IMPLEMENTATION.md](IMPLEMENTATION.md#on-demand-thumbnails) for frontend integration and retry behavior.
+
+## Telegram deletion
+
+Deleting a `media_item` queues deletion of its Telegram chunk messages after the database transaction commits. A single background worker processes the persistent queue immediately and polls every minute, with retries on failure. Thumbnail files are removed through PocketBase's file lifecycle. No external cron is needed.
+
+Telegram Bot API messages must be less than 48 hours old to be deleted. Failed cleanup keeps its metadata and appears in logs and the internal `_media_storage_deletions` table. See [Telegram's restrictions](https://core.telegram.org/bots/api#deletemessage) and [the frontend guide](IMPLEMENTATION.md#telegram-cleanup-after-deletion). The queue also supports S3 object deletion. Versioned buckets can retain older versions.
+
+## Trash and restore
+
+Authenticated `GET /api/media/capabilities` advertises Trash support. Use `POST /api/media/{id}/trash`, `POST /api/media/{id}/restore`, and `DELETE /api/media/{id}/permanent` with your PocketBase auth token. Trash is recoverable for 30 days and is excluded from album totals; original streaming is disabled while trashed. Permanent deletion and expired-trash cleanup queue cloud deletion. See [the frontend contract](IMPLEMENTATION.md#trash-api-and-capability-detection).

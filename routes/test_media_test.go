@@ -29,7 +29,7 @@ func TestMediaViewerSessionListAndPlayback(t *testing.T) {
 	r := router.NewRouter(func(w http.ResponseWriter, req *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
 		return &core.RequestEvent{App: app, Event: router.Event{Request: req, Response: w}}, nil
 	})
-	registerTestMediaRoutes(&core.ServeEvent{App: app, Router: r}, token, mediaStreamHandler(func(string) (objectStreamer, error) { return stub, nil }, token))
+	registerTestMediaRoutes(&core.ServeEvent{App: app, Router: r}, token, mediaStreamHandler(func(string) (objectStreamer, error) { return stub, nil }, token), newThumbnailService(func(string) (objectStreamer, error) { return stub, nil }).handler())
 	mux, err := r.BuildMux()
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +70,16 @@ func TestMediaViewerSessionListAndPlayback(t *testing.T) {
 		t.Fatal("missing session cookie")
 	}
 	cookie := cookies[0]
+	if request("HEAD", testMediaPrefix+"/"+uploaded.Id+"/thumb", "", cookie).Code != 404 {
+		t.Fatal("HEAD thumbnail route should report not yet generated")
+	}
+	if request("HEAD", testMediaPrefix+"/"+uploaded.Id+"/thumb", "", nil).Code != 404 {
+		t.Fatal("thumbnail route still requires a token")
+	}
+	if request("GET", testMediaPrefix+"/"+private.Id+"/thumb", "", cookie).Code != 404 {
+		t.Fatal("test viewer can access private library thumbnails")
+	}
+
 	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != testMediaPrefix || strings.Contains(cookie.Value, token) {
 		t.Fatalf("unsafe cookie %+v", cookie)
 	}

@@ -37,6 +37,9 @@ func saveUploadedMedia(app core.App, result s3.Result, filename, contentType str
 		record.Set("storage_key", result.Key)
 		record.Set("storage_etag", result.ETag)
 		record.Set("upload_status", "success")
+		// Explicitly backing up a trashed file restores its existing record.
+		record.Set("trashed_at", 0)
+		record.Set("trash_expires_at", 0)
 		if err := tx.Save(record); err != nil {
 			return err
 		}

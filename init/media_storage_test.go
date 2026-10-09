@@ -2,6 +2,7 @@ package appinit
 
 import (
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestMediaStorageMigrationPreservesRecordsAndRules(t *testing.T) {
 	}
 	public := ""
 	collection.ViewRule = &public
-	for _, name := range []string{"storage_backend", "storage_bucket", "storage_key", "storage_etag"} {
+	for _, name := range []string{"storage_backend", "storage_bucket", "storage_key", "storage_etag", "thumbs"} {
 		collection.Fields.RemoveByName(name)
 	}
 	collection.RemoveIndex("idx_media_storage_object")
@@ -40,10 +41,14 @@ func TestMediaStorageMigrationPreservesRecordsAndRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"storage_backend", "storage_bucket", "storage_key", "storage_etag"} {
+	for _, name := range []string{"storage_backend", "storage_bucket", "storage_key", "storage_etag", "thumbs"} {
 		if collection.Fields.GetByName(name) == nil {
 			t.Fatalf("missing field %s", name)
 		}
+	}
+	thumbs, ok := collection.Fields.GetByName("thumbs").(*core.FileField)
+	if !ok || thumbs.Protected || thumbs.MaxSelect != 1 {
+		t.Fatal("thumbnail field must store one public file")
 	}
 	if collection.ViewRule == nil || *collection.ViewRule != "" {
 		t.Fatal("existing view rule changed")

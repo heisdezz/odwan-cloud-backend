@@ -13,7 +13,12 @@ func Initialize(be *core.BootstrapEvent) error {
 		return err
 	}
 	Album_Count(be.App)
+	thumbnailHooks(be.App)
+	MediaDeletionHooks(be.App)
 	return be.App.RunInTransaction(func(app core.App) error {
+		if err := initializeDeletionQueue(app); err != nil {
+			return err
+		}
 		names := []string{"media_item", "album", "tag", "media_tag", "library_stats"}
 		collections := map[string]*core.Collection{}
 		missing := map[string]bool{}
@@ -77,10 +82,15 @@ func Initialize(be *core.BootstrapEvent) error {
 		for _, field := range []core.Field{
 			&core.SelectField{Name: "storage_backend", Values: []string{"telegram", "s3"}, MaxSelect: 1},
 			text("storage_bucket", false), text("storage_key", false), text("storage_etag", false),
+			number("trashed_at"), number("trash_expires_at"),
+			&core.FileField{Name: "thumbs", MaxSelect: 1, MaxSize: 1 << 20, MimeTypes: []string{"image/jpeg"}, Protected: false},
 		} {
 			if media.Fields.GetByName(field.GetName()) == nil {
 				media.Fields.Add(field)
 			}
+		}
+		if thumbs, ok := media.Fields.GetByName("thumbs").(*core.FileField); ok {
+			thumbs.Protected = false
 		}
 		media.AddIndex("idx_media_storage_object", true, "storage_backend, storage_bucket, storage_key", "storage_key != ''")
 		if err := app.Save(media); err != nil {

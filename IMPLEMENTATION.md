@@ -13,7 +13,7 @@ There are two API surfaces:
 | PocketBase collection API | Browsing records, albums, tags, editing library metadata, and authentication |
 | Custom application routes | Transferring file bytes, linking uploads to records, and streaming cloud objects |
 
-A `media_item` record has **no PocketBase file field**. Its paths and storage fields are strings pointing to an external object. Creating a record through the standard collection API does not upload bytes. `pb.files.getURL(record, filename)` and PocketBase thumbnail URLs do not apply to these media objects.
+Original media lives in external storage; paths and storage fields point to that object. Creating a record through the standard collection API does not upload the original bytes. The public `thumbs` file field holds a generated JPEG preview. PocketBase file URLs apply to `thumbs`; use the custom stream route for the original.
 
 Currently, the only HTTP upload route is a **test-token-authorized** route. A normal PocketBase user's auth token does not authorize it. The ordinary streaming route does support PocketBase user permissions.
 
@@ -23,14 +23,16 @@ Currently, the only HTTP upload route is a **test-token-authorized** route. A no
 | --- | --- | --- | --- |
 | GET | `/api/test/connection` | None | HTTP 200, plain text `ok` |
 | POST | `/api/test/s3/upload` | `X-S3-Test-Token` | Stored object information, record ID, stream/view URLs |
+| GET, HEAD | `/api/media/{id}/thumb` | Public (no token) | Saved JPEG; GET generates it if missing |
 | GET, HEAD | `/api/media/{id}/stream` | Collection View rule; auth header or short-lived file token where needed | Original file bytes or metadata |
 | GET | `/api/test/media/view` | Public page shell; connect inside the page | Built-in browser viewer |
 | POST | `/api/test/media/session` | `X-S3-Test-Token` | Viewing cookie and `expires_at` |
 | DELETE | `/api/test/media/session` | Clears the viewing cookie | HTTP 204 |
 | GET | `/api/test/media?offset=0` | Test header or viewing cookie | Completed test uploads and `next_offset` |
+| GET, HEAD | `/api/test/media/{id}/thumb` | Public (test objects only) | Test object thumbnail |
 | GET, HEAD | `/api/test/media/{id}/stream` | Test header or viewing cookie | Test object's bytes or metadata |
 
-The connection test is always registered. The other `/api/test/...` routes above are registered only when `config.json` has a nonempty `test_token`. Normal streaming remains registered when test routes are disabled. Backend selection and credentials are server configuration, not frontend request fields.
+The connection test is always registered. The media test routes above are registered only when `config.json` has a nonempty `test_token`. Normal streaming remains registered when test routes are disabled. Backend selection and credentials are server configuration, not frontend request fields.
 
 ## 2. Record shapes and derived values
 
@@ -306,7 +308,7 @@ This cookie is SameSite and path-scoped. The shipped viewer is designed for the 
 | Missing media album is assigned to `unsorted` | Clearing `album_id` moves a record there rather than leaving it ungrouped |
 | Startup repairs album assignments and counts | Refresh cached library data after server restarts |
 | Storage mapping is unique by backend/bucket/key | Handle record-save validation errors; avoid manually fabricating mapping fields |
-| Deleting a media record does not delete Telegram/S3 objects | “Delete from library” is accurate; “Delete cloud file permanently” is not implemented |
+| Permanent deletion queues cloud cleanup | Show Trash separately from permanent deletion; remote cleanup is asynchronous and can fail |
 | Album rename/path edits do not move cloud objects | Present them as library organization, not physical storage operations |
 
 When moving a media record between albums, updating `album_id` is sufficient. The server adjusts both album counts. Album covers use `cover_media_id`; fetch that media record and use its authorized stream URL for an image cover where appropriate. There is no automatic video-poster generation.
@@ -336,7 +338,7 @@ These are implementation gaps, not hidden dashboard features:
 
 - A normal-user upload endpoint authorized by PocketBase rules, with an explicit album/record contract. The current route uses one shared test token and `tests/` keys.
 - Cloud-upload progress/job endpoints, a browser resume protocol, and a remote cleanup API.
-- Automatic metadata extraction, useful duration values, image dimensions, and video thumbnails/posters.
+- Automatic metadata extraction, useful duration values, image dimensions, and richer video metadata.
 - Automatic tag counts and library statistics. Their fields exist, but the current hooks maintain **album counts only**.
 - Remote object deletion and cloud moves/renames tied to library actions.
 - A server-info/storage-settings API and a download/sync/migration workflow. `ServerInfo`, `SyncProgress`, `SyncStatus`, and `SavedServer` in `models.ts` do not establish implemented server endpoints.
@@ -353,3 +355,51 @@ Build the initial frontend around collection browsing, album/tag organization, a
 - [Collection creation and upgrades](init/base_app.go)
 - [Album hooks](init/album.go)
 - [Frontend model declarations](models.ts)
+
+## On-demand thumbnails
+
+`GET /api/media/{id}/thumb` creates a thumbnail only if it is missing, then returns `image/jpeg`. Subsequent requests serve the persisted file without contacting Telegram/S3 or running FFmpeg. Old completed uploads are supported without a bulk migration. The test viewer requests posters when a video is selected; uploads also return `thumbnail_url`, and the test listing includes `thumbnail_url` and the current `thumbs` filename.
+
+The server requires FFmpeg (`sudo apt install ffmpeg` on Ubuntu). Generation fits the first image/video frame inside 320×320, keeps its aspect ratio, and does not upscale small files. The result is a single public PocketBase file, not a database blob. Files stay in PocketBase storage and are cleaned up by its normal record/file lifecycle. Include these files in backups.
+
+One generation runs at a time, using one decoder/encoder thread and a 45-second deadline. An uncached concurrent request receives **503** and `Retry-After: 2`; it is not queued. A failed generation returns **503** with a five-minute retry delay, retained in memory until expiry or restart. Use a placeholder during failures; originals remain streamable. FFmpeg reads the logical object through a private temporary loopback range server, so split videos do not need to be merged or downloaded to disk in full. Depending on format and metadata layout, it may read several ranges/chunks.
+
+Thumbnail endpoints are public: no test token, PocketBase auth, or file token is required. This applies to cached previews and first-time generation. Originals still use their existing stream View rule and authentication. Anyone with a media record ID can view its preview.
+
+```ts
+const response = await fetch(`${pb.baseURL}/api/media/${media.id}/thumb`);
+if (response.ok) {
+  const preview = URL.createObjectURL(await response.blob());
+  video.poster = preview; // or image.src = preview
+  // Revoke this object URL when the preview is removed.
+} else if (response.status === 503) {
+  const seconds = Number(response.headers.get('Retry-After') || 2);
+  // Retry later while the item remains visible; keep a placeholder.
+}
+```
+
+Request thumbnails for visible items, preferably with limited frontend concurrency. Do not request every item in the library on each page load. A missing thumbnail's `HEAD` request returns **404** without generating it; once saved it returns **200**. Non-image/video objects return **415** on GET, and incomplete storage mappings return **409**. Cached responses support ETag/Last-Modified revalidation.
+
+You can also use `pb.files.getURL(media, media.thumbs)` once `thumbs` is populated; this serves the saved file and does not trigger generation. Refresh the record to obtain the generated filename. Changing the file hash, storage mapping/ETag, MIME type, or upload status clears `thumbs`; editing albums or display names keeps it. A missing saved file is regenerated on the next GET. No cron job is required.
+
+## Telegram cleanup after deletion
+
+Delete media through the ordinary PocketBase record API (`pb.collection('media_item').delete(id)`), subject to its Delete rule. A transactional hook records Telegram cleanup in the internal `_media_storage_deletions` table; a rolled-back deletion cannot remove Telegram files. Record deletion and thumbnail cleanup finish immediately. Remote cleanup runs after commit, one job at a time, with a one-minute polling fallback and on startup. No external cron is needed.
+
+The worker deletes every Telegram message referenced by the logical object, including split chunks, then removes its storage/deduplication mapping. It retains chunk references when a Telegram request fails, and retries with increasing delays up to six hours. Already-deleted messages are treated as success. Objects still referenced by a live media item or shared chunk mappings are preserved. Test uploads and cleanup run under the same lifecycle lock; a changed object ETag prevents deletion of a replaced object.
+
+A successful record DELETE does not prove remote deletion has completed. Failures appear in server logs and in `_media_storage_deletions.last_error`, with `attempts` and `next_attempt`. The queue survives restarts. Telegram's Bot API only deletes messages younger than 48 hours, and requires suitable chat permissions. Older messages may remain in Telegram; failed jobs and their chunk metadata remain available for inspection. See [Telegram deletion restrictions](https://core.telegram.org/bots/api#deletemessage). The queue supports Telegram and S3. S3 cleanup deletes the current object; a versioned bucket may retain older versions.
+
+## Trash API and capability detection
+
+Authenticated `GET /api/media/capabilities` returns `{"trash":true,"retention_days":30,"cloud_deletion":true}`. Supply the normal PocketBase `Authorization` token. Anonymous calls return 401. A 404 indicates an older backend; a 401 indicates missing/expired authentication. Capability flags describe supported routes, not a guarantee that a remote storage provider will accept every cleanup request.
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| POST | `/api/media/{id}/trash` | Set `trashed_at` and `trash_expires_at` with a 30-day recovery period |
+| POST | `/api/media/{id}/restore` | Restore before expiry; clear both timestamps |
+| DELETE | `/api/media/{id}/permanent` | Delete an already-trashed record and queue cloud cleanup |
+
+These routes require PocketBase auth, with the media Update rule for Trash/restore and Delete rule for permanent deletion. Success returns `{"ok":true}`. Timestamps are Unix milliseconds; zero means active. Repeating Trash does not extend its recovery period. Restoration after expiry is rejected. Filter normal library queries with `trashed_at = 0` and Trash queries with `trashed_at > 0`.
+
+Trashed records do not count toward album totals and their original streams return 404. The cleanup worker purges expired records and queues their cloud cleanup. Re-uploading a trashed file explicitly restores its matching record. Public thumbnail URLs remain available until the record is permanently removed.

@@ -7,6 +7,7 @@ import (
 )
 
 func RegisterRoutes(se *core.ServeEvent) {
+	registerTrashRoutes(se)
 	router := se.Router
 	router.GET("/api/test/connection", func(re *core.RequestEvent) error {
 		re.Response.Header().Set("Cache-Control", "no-store")

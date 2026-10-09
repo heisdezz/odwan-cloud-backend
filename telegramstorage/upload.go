@@ -29,6 +29,7 @@ var ErrTooLarge = errors.New("file exceeds telegram.max_file_size")
 const objectStrategy = "pocketbase-telegram"
 
 type Uploader struct {
+	deleteMessage          func(context.Context, string, int64) error
 	meta                   *metadata.SQLiteStore
 	objects                *store.ObjectStore
 	db                     *sql.DB
@@ -42,7 +43,11 @@ func New(c s3.Config) (*Uploader, error) {
 		base = "https://api.telegram.org"
 	}
 	client := telegram.NewHTTPClient(c.Telegram.BotToken, base, &http.Client{Timeout: 5 * time.Minute, Transport: documentTransport{}})
-	return newUploader(c, client)
+	u, err := newUploader(c, client)
+	if err == nil {
+		u.deleteMessage = telegramMessageDeleter(c.Telegram.BotToken, base)
+	}
+	return u, err
 }
 
 func newUploader(c s3.Config, client telegram.Client) (*Uploader, error) {

@@ -42,10 +42,13 @@ func RegisterStorageRoutes(se *core.ServeEvent, config s3.Config) error {
 		return streamer, nil
 	}
 	handler := mediaStreamHandler(resolver, config.TestToken)
+	thumbnail := newThumbnailService(resolver).handler()
+	se.Router.GET("/api/media/{id}/thumb", thumbnail)
+	se.Router.HEAD("/api/media/{id}/thumb", thumbnail)
 	se.Router.GET("/api/media/{id}/stream", handler)
 	se.Router.HEAD("/api/media/{id}/stream", handler)
 	if config.TestToken != "" {
-		registerTestMediaRoutes(se, config.TestToken, handler)
+		registerTestMediaRoutes(se, config.TestToken, handler, thumbnail)
 		uploader, err := registry.get(config.StorageBackend)
 		if err != nil {
 			return fmt.Errorf("test uploader: %w", err)
@@ -55,9 +58,19 @@ func RegisterStorageRoutes(se *core.ServeEvent, config s3.Config) error {
 			registry.close()
 			return err
 		}
-		se.Router.POST("/api/test/s3/upload", testUploadHandler(uploader, stagingDir, config.TestToken)).Bind(apis.BodyLimit(testUploadBodyLimit))
+		upload := testUploadHandler(uploader, stagingDir, config.TestToken)
+		se.Router.POST("/api/test/s3/upload", func(e *core.RequestEvent) error {
+			registry.lifecycle.Lock()
+			defer registry.lifecycle.Unlock()
+			return upload(e)
+		}).Bind(apis.BodyLimit(testUploadBodyLimit))
 	}
-	se.App.OnTerminate().BindFunc(func(e *core.TerminateEvent) error { return errors.Join(e.Next(), registry.close()) })
+	cancelCleanup, cleanupDone := registerMediaCleanup(se, registry)
+	se.App.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		cancelCleanup()
+		<-cleanupDone
+		return errors.Join(e.Next(), registry.close())
+	})
 
 	return nil
 }
@@ -158,7 +171,7 @@ func testUploadHandler(uploader fileUploader, stagingDir, token string) func(*co
 			status = "duplicate"
 		}
 		return re.JSON(http.StatusOK, map[string]any{
-			"media_id": mediaID, "stream_url": streamURL, "view_url": testMediaPrefix + "/view?id=" + mediaID, "backend": result.Backend, "bucket": result.Bucket, "key": result.Key, "etag": result.ETag,
+			"media_id": mediaID, "stream_url": streamURL, "thumbnail_url": "/api/media/" + mediaID + "/thumb", "view_url": testMediaPrefix + "/view?id=" + mediaID, "backend": result.Backend, "bucket": result.Bucket, "key": result.Key, "etag": result.ETag,
 			"size_bytes": size, "status": status, "hash": result.Hash, "duplicate": result.Duplicate,
 		})
 	}
