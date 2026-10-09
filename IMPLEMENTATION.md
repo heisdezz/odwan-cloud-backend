@@ -15,7 +15,7 @@ There are two API surfaces:
 
 Original media lives in external storage; paths and storage fields point to that object. Creating a record through the standard collection API does not upload the original bytes. The public `thumbs` file field holds a generated JPEG preview. PocketBase file URLs apply to `thumbs`; use the custom stream route for the original.
 
-Currently, the only HTTP upload route is a **test-token-authorized** route. A normal PocketBase user's auth token does not authorize it. The ordinary streaming route does support PocketBase user permissions.
+Currently, the only HTTP upload route is a **test-token-authorized** route. A normal PocketBase user's auth token does not authorize it. Media browsing, streaming, thumbnails, and the test viewer are public.
 
 ### Custom route contract
 
@@ -24,15 +24,13 @@ Currently, the only HTTP upload route is a **test-token-authorized** route. A no
 | GET | `/api/test/connection` | None | HTTP 200, plain text `ok` |
 | POST | `/api/test/s3/upload` | `X-S3-Test-Token` | Stored object information, record ID, stream/view URLs |
 | GET, HEAD | `/api/media/{id}/thumb` | Public (no token) | Saved JPEG; GET generates it if missing |
-| GET, HEAD | `/api/media/{id}/stream` | Collection View rule; auth header or short-lived file token where needed | Original file bytes or metadata |
+| GET, HEAD | `/api/media/{id}/stream` | Public (no token) | Original file bytes or metadata |
 | GET | `/api/test/media/view` | Public page shell; connect inside the page | Built-in browser viewer |
-| POST | `/api/test/media/session` | `X-S3-Test-Token` | Viewing cookie and `expires_at` |
-| DELETE | `/api/test/media/session` | Clears the viewing cookie | HTTP 204 |
-| GET | `/api/test/media?offset=0` | Test header or viewing cookie | Completed test uploads and `next_offset` |
+| GET | `/api/test/media?offset=0` | Public (no token) | Completed test uploads and `next_offset` |
 | GET, HEAD | `/api/test/media/{id}/thumb` | Public (test objects only) | Test object thumbnail |
-| GET, HEAD | `/api/test/media/{id}/stream` | Test header or viewing cookie | Test object's bytes or metadata |
+| GET, HEAD | `/api/test/media/{id}/stream` | Public (no token) | Test object's bytes or metadata |
 
-The connection test is always registered. The media test routes above are registered only when `config.json` has a nonempty `test_token`. Normal streaming remains registered when test routes are disabled. Backend selection and credentials are server configuration, not frontend request fields.
+Viewing routes are always registered, including when `test_token` is empty. Only the upload route is disabled when no test token is configured. Backend selection and credentials are server configuration, not frontend request fields.
 
 ## 2. Record shapes and derived values
 
@@ -198,47 +196,18 @@ Use:
 
 The server selects the backend and key from the record. Sending a backend/key directly to this route is unsupported. A successful upload's `stream_url` is equivalent to this derived URL.
 
-### Authentication
+### Public playback
 
-The normal stream checks `media_item`'s View rule. Records are locked by default unless rules are configured. This repository does not create a normal frontend user collection or define your user-access policy automatically.
-
-| Credential | Where it works |
-| --- | --- |
-| PocketBase auth token in `Authorization` | Normal streams, subject to the View rule |
-| Short-lived file token in `?token=...` | Normal streams, subject to the View rule |
-| Test token in `X-S3-Test-Token` | Uploads and test routes; normal streams only for `tests/` objects |
-| Test viewer cookie | `/api/test/media` routes only |
-
-Native `<video>`, `<audio>`, and `<img>` elements cannot attach your custom auth header. For protected media, obtain a short-lived file token using the authenticated file-token endpoint:
+No test token, file token, or PocketBase login is needed to view active media. Startup makes the `media_item` List and View rules public while preserving its write rules. Other collections keep their existing rules.
 
 ```ts
-async function protectedMediaURL(
-  baseURL: string,
-  authToken: string,
-  mediaID: string,
-) {
-  const response = await fetch(new URL("/api/files/token", baseURL), {
-    method: "POST",
-    headers: { Authorization: authToken },
-  });
-  const body = await response.json();
-  if (!response.ok) {
-    throw new Error(body.error ?? body.message ?? "Could not authorize playback");
-  }
-  const url = new URL(`/api/media/${encodeURIComponent(mediaID)}/stream`, baseURL);
-  url.searchParams.set("token", body.token);
-  return url.toString();
-}
-
-video.src = await protectedMediaURL(baseURL, authToken, media.id);
+video.src = `${baseURL}/api/media/${encodeURIComponent(media.id)}/stream`;
 video.controls = true;
 video.preload = "metadata";
 video.playsInline = true;
 ```
 
-The token is still governed by the user's View rule; it does not grant access to every record. Regular auth tokens and test tokens do not work in the stream query string. Avoid storing file-token URLs as durable record data. On expiry, obtain a new token; if replacing a player's URL, retain the playback time and restore it after metadata loads where the format supports seeking.
-
-Publicly readable media can use the normal stream URL directly. The PocketBase JavaScript client's `pb.files.getToken()` is also used by the existing [streaming guide](routes/README.md).
+Use the same direct URL for images, audio, and downloads. Trashed media still returns 404. Upload requests require `X-S3-Test-Token`; metadata changes and Trash actions keep their PocketBase write authorization.
 
 ### Range behavior
 
@@ -252,50 +221,13 @@ Let native media elements request ranges themselves. Do not fetch the entire vid
 
 Telegram chunks are fetched only when they overlap the requested bytes, then streamed in order. There is no full-file merge first. Seeking within a chunk may require downloading and discarding its leading bytes. Buffering, unsupported codecs, and MP4 metadata placement still affect playback.
 
-The response uses an inline `Content-Disposition` with the original filename. For a same-origin download action, use an anchor to the authorized URL with a `download` attribute. For other deployment layouts, verify browser download behavior separately.
+The response uses an inline `Content-Disposition` with the original filename. For a same-origin download action, use an anchor to the stream URL with a `download` attribute. For other deployment layouts, verify browser download behavior separately.
 
 ## 5. Existing browser test viewer
 
-The built-in page is at `/api/test/media/view`; upload responses include a `view_url` selecting the returned record.
+Open `/api/test/media/view` without logging in. The page lists active, completed test uploads and supports image previews, video/audio playback, posters, and downloads. Viewing sessions and cookies are no longer required.
 
-For a same-origin test frontend, connect without putting the test token into a media URL:
-
-```ts
-await fetch("/api/test/media/session", {
-  method: "POST",
-  credentials: "same-origin",
-  headers: { "X-S3-Test-Token": enteredToken },
-});
-
-const response = await fetch("/api/test/media?offset=0", {
-  credentials: "same-origin",
-});
-const page = await response.json();
-```
-
-Check `response.ok` on both requests before proceeding. The session response contains `expires_at`; its HttpOnly cookie lasts one hour and cannot be read by JavaScript.
-
-The list response is:
-
-```ts
-interface TestMediaPage {
-  items: Array<{
-    id: string;
-    name: string;
-    mime_type: string;
-    size_bytes: number;
-    backend: "telegram" | "s3";
-    stream_url: string; // /api/test/media/{id}/stream
-  }>;
-  next_offset: number | null;
-}
-```
-
-This endpoint returns at most 50 records, ordered by `created_at DESC, id DESC`. It only includes completed records with storage mappings and keys starting with `tests/`. Follow `next_offset` until it is `null`; a full last page can lead to one empty follow-up page.
-
-Use each item's **test** `stream_url` with native media elements. The viewing cookie does not authorize the normal `/api/media/...` URL. DELETE `/api/test/media/session` clears the cookie. A 401 during listing or playback means reconnect.
-
-This cookie is SameSite and path-scoped. The shipped viewer is designed for the same origin as PocketBase. A frontend hosted on another site must use a same-origin proxy or normal PocketBase/file-token authentication for playback; `credentials: "include"` alone does not bypass SameSite restrictions.
+`GET /api/test/media?offset=0` returns up to 50 test objects as `{items, next_offset}`. Items include `id`, `name`, `mime_type`, `size_bytes`, `backend`, `stream_url`, `thumbnail_url`, and `thumbs`. Follow `next_offset` until null. Test stream/thumbnail routes expose only keys under `tests/`; the ordinary `/api/media/{id}/stream` route serves all active media publicly.
 
 ## 6. Server hooks and UI consequences
 
@@ -311,7 +243,7 @@ This cookie is SameSite and path-scoped. The shipped viewer is designed for the 
 | Permanent deletion queues cloud cleanup | Show Trash separately from permanent deletion; remote cleanup is asynchronous and can fail |
 | Album rename/path edits do not move cloud objects | Present them as library organization, not physical storage operations |
 
-When moving a media record between albums, updating `album_id` is sufficient. The server adjusts both album counts. Album covers use `cover_media_id`; fetch that media record and use its authorized stream URL for an image cover where appropriate. There is no automatic video-poster generation.
+When moving a media record between albums, updating `album_id` is sufficient. The server adjusts both album counts. Album covers use `cover_media_id`; fetch that media record and use its public stream or thumbnail URL for an image cover where appropriate. Video posters are generated on demand through the thumbnail endpoint.
 
 ## 7. Errors and empty states
 
@@ -320,7 +252,7 @@ Custom routes commonly return `{ "error": "..." }`; PocketBase endpoints general
 | Status / situation | Frontend behavior |
 | --- | --- |
 | Upload 400 | Show the invalid file-field, key, or hash message; correct the input |
-| Test route 401 | Ask for the test token again or reconnect the viewing session |
+| Upload route 401 | Supply the configured upload test token |
 | Stream 404 | Treat as unavailable or inaccessible; the response deliberately does not distinguish every permission failure |
 | Stream 409 | Show “File is not ready for playback”; its mapping/status is incomplete |
 | Telegram upload 409 | Keep the queue entry and retry after the active transfer finishes |
@@ -343,14 +275,14 @@ These are implementation gaps, not hidden dashboard features:
 - Remote object deletion and cloud moves/renames tied to library actions.
 - A server-info/storage-settings API and a download/sync/migration workflow. `ServerInfo`, `SyncProgress`, `SyncStatus`, and `SavedServer` in `models.ts` do not establish implemented server endpoints.
 
-Build the initial frontend around collection browsing, album/tag organization, authorized streaming, and the existing test upload/viewer flow. Keep planned features separate until their backend contracts exist.
+Build the initial frontend around collection browsing, album/tag organization, public streaming, and the existing test upload/viewer flow. Keep planned features separate until their backend contracts exist.
 
 ## Implementation references
 
 - [Upload route and response](routes/s3_test_upload.go)
 - [Record adoption and storage mapping](routes/media_record.go)
-- [Streaming and access checks](routes/media_stream.go)
-- [Viewer session, list, and test streaming](routes/test_media.go)
+- [Public streaming](routes/media_stream.go)
+- [Public viewer, list, and test streaming](routes/test_media.go)
 - [Working browser viewer](routes/test_media.html)
 - [Collection creation and upgrades](init/base_app.go)
 - [Album hooks](init/album.go)
@@ -364,7 +296,7 @@ The server requires FFmpeg (`sudo apt install ffmpeg` on Ubuntu). Generation fit
 
 One generation runs at a time, using one decoder/encoder thread and a 45-second deadline. An uncached concurrent request receives **503** and `Retry-After: 2`; it is not queued. A failed generation returns **503** with a five-minute retry delay, retained in memory until expiry or restart. Use a placeholder during failures; originals remain streamable. FFmpeg reads the logical object through a private temporary loopback range server, so split videos do not need to be merged or downloaded to disk in full. Depending on format and metadata layout, it may read several ranges/chunks.
 
-Thumbnail endpoints are public: no test token, PocketBase auth, or file token is required. This applies to cached previews and first-time generation. Originals still use their existing stream View rule and authentication. Anyone with a media record ID can view its preview.
+Thumbnail endpoints are public: no test token, PocketBase auth, or file token is required. This applies to cached previews and first-time generation. Original streams are also public. Anyone with a media record ID can view its preview.
 
 ```ts
 const response = await fetch(`${pb.baseURL}/api/media/${media.id}/thumb`);
@@ -392,7 +324,7 @@ A successful record DELETE does not prove remote deletion has completed. Failure
 
 ## Trash API and capability detection
 
-Authenticated `GET /api/media/capabilities` returns `{"trash":true,"retention_days":30,"cloud_deletion":true}`. Supply the normal PocketBase `Authorization` token. Anonymous calls return 401. A 404 indicates an older backend; a 401 indicates missing/expired authentication. Capability flags describe supported routes, not a guarantee that a remote storage provider will accept every cleanup request.
+Public `GET /api/media/capabilities` returns `{"trash":true,"retention_days":30,"cloud_deletion":true}`. No token is needed for this read-only endpoint. A 404 indicates an older backend. Capability flags describe supported routes, not a guarantee that a remote storage provider will accept every cleanup request.
 
 | Method | Route | Behavior |
 | --- | --- | --- |

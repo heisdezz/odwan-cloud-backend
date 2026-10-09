@@ -176,40 +176,16 @@ Let Yaak generate the multipart `Content-Type` header and boundary.
 
 ## Viewing and streaming
 
-Open **[http://localhost:8090/api/test/media/view](http://localhost:8090/api/test/media/view)**, enter your test token, and select an upload. The page supports image previews, video/audio controls, seeking, pagination, and downloading originals.
+Open `http://localhost:8090/api/test/media/view` to browse test uploads without a token or login. The viewer supports images, audio, video, seeking, posters, and downloads. Setting `test_token` to an empty string disables uploading, while viewing remains available.
 
-The viewer uses a signed, HttpOnly, SameSite cookie valid for one hour. It only lists and streams completed files under `tests/`; reconnect when the session expires. Set `test_token` to `""` to disable test uploads and the viewer.
-
-For direct streaming:
-
-```bash
-curl --fail-with-body \
-  -H 'X-S3-Test-Token: replace-with-your-test-token' \
-  -H 'Range: bytes=0-1048575' \
-  'http://localhost:8090/api/media/RECORD_ID/stream' \
-  -o first-part.bin
-```
-
-`GET /api/media/{id}/stream` streams the logical file. `HEAD` returns metadata without downloading content. Single ranges support fixed, open-ended, and suffix offsets. Partial responses use HTTP 206 and `Content-Range`; unsatisfiable or multiple ranges return HTTP 416. ETag and modification-time validators are supported.
-
-Telegram downloads only overlapping chunks and streams their bytes in order. It may discard a prefix within the first requested chunk. Memory use does not grow with the full file size, though playback can buffer while the next Telegram request starts. Browser playback depends on the source codec and file layout.
-
-### Access rules and browser playback
-
-Normal streams follow the `media_item` collection's **View rule**. PocketBase authentication through the `Authorization` header is supported. The test header grants access only to objects under `tests/`; the viewer cookie only authorizes its separate test routes.
-
-For a browser player with an authenticated PocketBase JavaScript client:
+Original files use the public `GET /api/media/{id}/stream` route. `HEAD` returns metadata. Single ranges support fixed, open-ended, and suffix offsets; partial responses use HTTP 206 and `Content-Range`. Telegram fetches overlapping chunks without a merged file. Browser playback depends on codec and file layout. Trashed originals return 404.
 
 ```js
-const token = await pb.files.getToken();
-const video = document.querySelector("video");
-video.src = `${pb.baseURL}/api/media/${media.id}/stream?token=${encodeURIComponent(token)}`;
+video.src = `${pb.baseURL}/api/media/${media.id}/stream`;
 video.controls = true;
 ```
 
-File tokens are short-lived and still require the View rule to permit access. Refresh them for later playback or seek requests after expiry. Regular auth tokens and test tokens are not accepted as stream URL parameters. Media allowed by a public View rule can use the stream URL directly.
-
-See [streaming and viewer details](routes/README.md).
+Startup makes `media_item` List and View rules public. Its write permissions and the rules of other collections are preserved. Uploads require the configured `X-S3-Test-Token`; Trash, restore, and permanent deletion keep their PocketBase write authorization.
 
 ## PocketBase collections
 
@@ -221,7 +197,7 @@ See [streaming and viewer details](routes/README.md).
 | `media_tag` | Unique media/tag relation pairs |
 | `library_stats` | Schema for library totals and database statistics |
 
-Startup adds missing storage fields to existing media collections: `storage_backend`, `storage_bucket`, `storage_key`, and `storage_etag`. A unique index prevents multiple records pointing to the same backend/bucket/key. Existing records and API rules are preserved. Collection creation does not grant public access automatically.
+Startup adds missing storage fields to existing media collections: `storage_backend`, `storage_bucket`, `storage_key`, and `storage_etag`. A unique index prevents multiple records pointing to the same backend/bucket/key. Existing records and write rules are preserved. Media-item reads are public.
 
 The `unsorted` album has both name and ID `unsorted`, cannot be renamed or deleted, and receives media with no album. Album counts update transactionally and are repaired on startup. PocketBase IDs and relation IDs are strings; [models.ts](models.ts) reflects this.
 
@@ -285,8 +261,8 @@ Automated tests use temporary databases and fake storage clients; they do not up
 | Symptom | Check |
 | --- | --- |
 | Test upload/viewer returns 404 | Set a nonempty `test_token`, restart, and use the documented route and method |
-| Upload or viewer returns 401 | Supply the configured test token, or reconnect if the viewing cookie expired |
-| Normal stream returns 404 | Check the record ID, View rule, and authentication; denied access is returned as 404 |
+| Upload returns 401 | Supply the configured test token |
+| Normal stream returns 404 | Check the record ID and whether the item is in Trash |
 | Stream returns 409 | Complete the upload or resubmit an older upload to populate its storage mapping |
 | Upload returns 400 | Check the multipart file field, supplied hash, and `tests/` key |
 | Upload returns 413 | Reduce the request size below 256 MiB including form overhead, and check Telegram's configured file-size limit |
@@ -297,7 +273,7 @@ Automated tests use temporary databases and fake storage clients; they do not up
 
 ## Thumbnails
 
-Install FFmpeg (`sudo apt install ffmpeg` on Ubuntu). Startup adds a public `thumbs` file field to `media_item`. `GET /api/media/{id}/thumb` creates a missing image/video preview on demand and caches the JPEG in PocketBase storage. Thumbnail URLs require no token. Original streaming keeps its existing permissions. The test viewer loads video posters through `/api/test/media/{id}/thumb`.
+Install FFmpeg (`sudo apt install ffmpeg` on Ubuntu). Startup adds a public `thumbs` file field to `media_item`. `GET /api/media/{id}/thumb` creates a missing image/video preview on demand and caches the JPEG in PocketBase storage. Thumbnail URLs require no token. Original streaming is public too. The test viewer loads video posters through `/api/test/media/{id}/thumb`.
 
 Generation uses one worker, one FFmpeg thread, a 320×320 size limit, and a 45-second timeout. Concurrent uncached requests return 503 with `Retry-After: 2`; failed files have a five-minute retry delay. Cached files need no decoder or remote reads. Split Telegram videos are read using byte ranges, without a merged temporary video. Source changes invalidate the thumbnail; no cron job is needed. See [IMPLEMENTATION.md](IMPLEMENTATION.md#on-demand-thumbnails) for frontend integration and retry behavior.
 
@@ -309,4 +285,4 @@ Telegram Bot API messages must be less than 48 hours old to be deleted. Failed c
 
 ## Trash and restore
 
-Authenticated `GET /api/media/capabilities` advertises Trash support. Use `POST /api/media/{id}/trash`, `POST /api/media/{id}/restore`, and `DELETE /api/media/{id}/permanent` with your PocketBase auth token. Trash is recoverable for 30 days and is excluded from album totals; original streaming is disabled while trashed. Permanent deletion and expired-trash cleanup queue cloud deletion. See [the frontend contract](IMPLEMENTATION.md#trash-api-and-capability-detection).
+Public `GET /api/media/capabilities` advertises Trash support. Use `POST /api/media/{id}/trash`, `POST /api/media/{id}/restore`, and `DELETE /api/media/{id}/permanent` with your PocketBase auth token. Trash is recoverable for 30 days and is excluded from album totals; original streaming is disabled while trashed. Permanent deletion and expired-trash cleanup queue cloud deletion. See [the frontend contract](IMPLEMENTATION.md#trash-api-and-capability-detection).

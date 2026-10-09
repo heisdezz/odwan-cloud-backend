@@ -2,14 +2,12 @@ package routes
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
-	"net/netip"
 	"path"
 	"strings"
 	"sync"
@@ -64,8 +62,8 @@ func (r *storageRegistry) close() error {
 	return result
 }
 
-// Streams use the media collection's view rule, or the test header for test objects.
-func mediaStreamHandler(resolve func(string) (objectStreamer, error), testToken string) func(*core.RequestEvent) error {
+// Completed, active media streams are public.
+func mediaStreamHandler(resolve func(string) (objectStreamer, error), _ string) func(*core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		record, err := e.App.FindRecordById("media_item", e.Request.PathValue("id"))
 		if errors.Is(err, sql.ErrNoRows) {
@@ -76,9 +74,6 @@ func mediaStreamHandler(resolve func(string) (objectStreamer, error), testToken 
 		}
 		if record.GetInt("trashed_at") > 0 {
 			return e.NotFoundError("Media is in trash", nil)
-		}
-		if err := authorizeMedia(e, record, testToken); err != nil {
-			return err
 		}
 		backend, bucket, key := record.GetString("storage_backend"), record.GetString("storage_bucket"), record.GetString("storage_key")
 		if record.GetString("upload_status") != "success" || backend == "" || bucket == "" || key == "" {
@@ -100,34 +95,6 @@ func mediaStreamHandler(resolve func(string) (objectStreamer, error), testToken 
 		}
 		return serveMedia(e, client, bucket, key, record.GetString("original_relative_path"), record.GetString("mime_type"), stat)
 	}
-}
-
-// Shared by streaming and thumbnail routes so private media has identical access rules.
-func authorizeMedia(e *core.RequestEvent, record *core.Record, testToken string) error {
-	testAccess := testToken != "" && strings.HasPrefix(record.GetString("storage_key"), "tests/") && subtle.ConstantTimeCompare([]byte(e.Request.Header.Get("X-S3-Test-Token")), []byte(testToken)) == 1
-	if !testAccess {
-		info, err := e.RequestInfo()
-		if err != nil {
-			return err
-		}
-		accessInfo := *info
-		if token := e.Request.URL.Query().Get("token"); token != "" && info.Auth == nil {
-			auth, _ := e.App.FindAuthRecordByToken(token, core.TokenTypeFile)
-			if auth != nil && auth.IsSuperuser() && len(e.App.Settings().SuperuserIPs) > 0 && !streamIPAllowed(e.RealIP(), e.App.Settings().SuperuserIPs) {
-				auth = nil
-			}
-			accessInfo.Auth = auth
-			accessInfo.Context = core.RequestInfoContextProtectedFile
-		}
-		allowed, err := e.App.CanAccessRecord(record, &accessInfo, record.Collection().ViewRule)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return e.NotFoundError("Media not found", nil)
-		}
-	}
-	return nil
 }
 
 func serveMedia(e *core.RequestEvent, client objectStreamer, bucket, key, filename, contentType string, stat s3.StreamInfo) error {
@@ -219,20 +186,4 @@ func serveMedia(e *core.RequestEvent, client objectStreamer, bucket, key, filena
 		}
 	}
 	return nil
-}
-
-func streamIPAllowed(ip string, allowed []string) bool {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return false
-	}
-	for _, value := range allowed {
-		if prefix, err := netip.ParsePrefix(value); err == nil && prefix.Contains(addr) {
-			return true
-		}
-		if candidate, err := netip.ParseAddr(value); err == nil && candidate == addr {
-			return true
-		}
-	}
-	return false
 }

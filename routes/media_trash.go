@@ -12,9 +12,6 @@ const trashRetention = 30 * 24 * time.Hour
 
 func registerTrashRoutes(se *core.ServeEvent) {
 	se.Router.GET("/api/media/capabilities", func(e *core.RequestEvent) error {
-		if e.Auth == nil {
-			return e.UnauthorizedError("Log in to continue", nil)
-		}
 		return e.JSON(http.StatusOK, map[string]any{"trash": true, "retention_days": 30, "cloud_deletion": true})
 	})
 	se.Router.POST("/api/media/{id}/trash", mediaTrashHandler("trash"))

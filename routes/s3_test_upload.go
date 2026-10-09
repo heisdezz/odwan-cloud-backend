@@ -47,8 +47,8 @@ func RegisterStorageRoutes(se *core.ServeEvent, config s3.Config) error {
 	se.Router.HEAD("/api/media/{id}/thumb", thumbnail)
 	se.Router.GET("/api/media/{id}/stream", handler)
 	se.Router.HEAD("/api/media/{id}/stream", handler)
+	registerTestMediaRoutes(se, "", handler, thumbnail)
 	if config.TestToken != "" {
-		registerTestMediaRoutes(se, config.TestToken, handler, thumbnail)
 		uploader, err := registry.get(config.StorageBackend)
 		if err != nil {
 			return fmt.Errorf("test uploader: %w", err)

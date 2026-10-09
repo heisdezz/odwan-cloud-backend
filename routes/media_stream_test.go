@@ -108,37 +108,34 @@ func TestMediaStreamingRangesAndConditions(t *testing.T) {
 	}
 }
 
-func TestMediaStreamingAccessRules(t *testing.T) {
+func TestMediaStreamingIsPublicAndTrashIsHidden(t *testing.T) {
 	app := mediaTestApp(t)
-	record, err := saveUploadedMedia(app, s3.Result{Backend: "telegram", Bucket: "telegram", Key: "tests/private.mp4", Hash: strings.Repeat("b", 64)}, "private.mp4", "video/mp4", 10)
+	record, err := saveUploadedMedia(app, s3.Result{Backend: "telegram", Bucket: "telegram", Key: "library/video.mp4", Hash: strings.Repeat("b", 64)}, "video.mp4", "video/mp4", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	calls := 0
-	handler := mediaStreamHandler(func(string) (objectStreamer, error) { calls++; return &streamStub{data: []byte("0123456789")}, nil }, "secret")
-	request := func(token string) *core.RequestEvent {
-		req := httptest.NewRequest("GET", "/api/media/"+record.Id+"/stream", nil)
-		req.SetPathValue("id", record.Id)
-		req.Header.Set("X-S3-Test-Token", token)
-		return &core.RequestEvent{App: app, Event: router.Event{Request: req, Response: httptest.NewRecorder()}}
+	for _, token := range []string{"", "wrong"} {
+		request := httptest.NewRequest("GET", "/api/media/"+record.Id+"/stream", nil)
+		request.SetPathValue("id", record.Id)
+		if token != "" {
+			request.Header.Set("X-S3-Test-Token", token)
+		}
+		response := httptest.NewRecorder()
+		event := &core.RequestEvent{App: app, Event: router.Event{Request: request, Response: response}}
+		stub := &streamStub{data: []byte("0123456789")}
+		if err := mediaStreamHandler(func(string) (objectStreamer, error) { return stub, nil }, "")(event); err != nil || response.Code != 200 || response.Body.String() != "0123456789" {
+			t.Fatal("anonymous stream failed", err, response.Code)
+		}
 	}
-	if err := handler(request("wrong")); err == nil {
-		t.Fatal("locked view rule bypassed")
-	}
-	if calls != 0 {
-		t.Fatal("denied request opened storage")
-	}
-	collection := record.Collection()
-	public := ""
-	collection.ViewRule = &public
-	if err := app.Save(collection); err != nil {
+	record.Set("trashed_at", 1)
+	if err := app.Save(record); err != nil {
 		t.Fatal(err)
 	}
-	if err := handler(request("")); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 1 {
-		t.Fatal("public rule denied")
+	request := httptest.NewRequest("HEAD", "/api/media/"+record.Id+"/stream", nil)
+	request.SetPathValue("id", record.Id)
+	event := &core.RequestEvent{App: app, Event: router.Event{Request: request, Response: httptest.NewRecorder()}}
+	if err := mediaStreamHandler(func(string) (objectStreamer, error) { t.Fatal("trashed storage opened"); return nil, nil }, "")(event); err == nil {
+		t.Fatal("trashed media was served")
 	}
 }
 
@@ -163,60 +160,6 @@ func TestMediaRecordDedupAndAlbumCounts(t *testing.T) {
 	}
 	if album.GetInt("media_count") != 1 {
 		t.Fatalf("album count %d", album.GetInt("media_count"))
-	}
-}
-
-func TestMediaStreamAcceptsOnlyFileTokensInURLs(t *testing.T) {
-	app := mediaTestApp(t)
-	users := core.NewAuthCollection("stream_users")
-	if err := app.Save(users); err != nil {
-		t.Fatal(err)
-	}
-	user := core.NewRecord(users)
-	user.Set("email", "viewer@example.com")
-	user.SetPassword("long-test-password")
-	if err := app.Save(user); err != nil {
-		t.Fatal(err)
-	}
-	record, err := saveUploadedMedia(app, s3.Result{Backend: "telegram", Bucket: "telegram", Key: "media/video.mp4", Hash: strings.Repeat("d", 64)}, "video.mp4", "video/mp4", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	collection := record.Collection()
-	rule := "@request.auth.id != ''"
-	collection.ViewRule = &rule
-	if err := app.Save(collection); err != nil {
-		t.Fatal(err)
-	}
-	fileToken, err := user.NewFileToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	authToken, err := user.NewAuthToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name, token string
-		allowed     bool
-	}{
-		{"file token", fileToken, true}, {"auth token", authToken, false}, {"invalid token", "wrong", false}, {"test header outside tests", "", false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/api/media/"+record.Id+"/stream?token="+test.token, nil)
-			req.SetPathValue("id", record.Id)
-			req.Header.Set("X-S3-Test-Token", "secret")
-			response := httptest.NewRecorder()
-			event := &core.RequestEvent{App: app, Event: router.Event{Request: req, Response: response}}
-			stub := &streamStub{data: []byte("0123456789")}
-			err := mediaStreamHandler(func(string) (objectStreamer, error) { return stub, nil }, "secret")(event)
-			if (err == nil) != test.allowed {
-				t.Fatalf("allowed=%v error=%v", test.allowed, err)
-			}
-			if !test.allowed && stub.calls != 0 {
-				t.Fatal("denied request downloaded bytes")
-			}
-		})
 	}
 }
 

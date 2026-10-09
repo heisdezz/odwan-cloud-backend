@@ -77,7 +77,7 @@ func Initialize(be *core.BootstrapEvent) error {
 				return fmt.Errorf("configure %s: %w", name, err)
 			}
 		}
-		// Add storage mappings to existing installations without replacing fields or rules.
+		// Add fields to existing installations while preserving write permissions.
 		media := collections["media_item"]
 		for _, field := range []core.Field{
 			&core.SelectField{Name: "storage_backend", Values: []string{"telegram", "s3"}, MaxSelect: 1},
@@ -92,6 +92,8 @@ func Initialize(be *core.BootstrapEvent) error {
 		if thumbs, ok := media.Fields.GetByName("thumbs").(*core.FileField); ok {
 			thumbs.Protected = false
 		}
+		public := ""
+		media.ListRule, media.ViewRule = &public, &public
 		media.AddIndex("idx_media_storage_object", true, "storage_backend, storage_bucket, storage_key", "storage_key != ''")
 		if err := app.Save(media); err != nil {
 			return fmt.Errorf("configure media storage: %w", err)

@@ -13,12 +13,8 @@
 <main>
 <h1>Test uploads</h1>
 <p>View your uploaded images, play audio and video, and try seeking through a video.</p>
-<form id="login" class="login">
-<label for="token">Test token</label>
-<div class="fields"><input id="token" type="password" autocomplete="off" required placeholder="Enter your configured test token"><button id="connect" type="submit">Connect</button></div>
-</form>
 <div id="workspace" hidden>
-<div class="toolbar"><span id="count">Loading uploads…</span><div><button id="refresh" class="secondary" type="button">Refresh</button> <button id="disconnect" class="secondary" type="button">Disconnect</button></div></div>
+<div class="toolbar"><span id="count">Loading uploads…</span><div><button id="refresh" class="secondary" type="button">Refresh</button></div></div>
 <div class="layout">
 <aside class="library" aria-label="Uploaded files"><ul id="files" class="files"></ul><button id="more" class="secondary more" type="button" hidden>Load more</button></aside>
 <section class="stage" aria-label="Media preview"><div id="screen" class="screen"><p class="placeholder">Choose an upload to view it.</p></div><h2 id="name" class="now" hidden></h2><p id="meta" class="meta"></p><a id="download" hidden download>Download original</a></section>
@@ -35,8 +31,7 @@ const requested=new URLSearchParams(location.search).get('id');
 function message(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error)}
 function size(bytes){return new Intl.NumberFormat(undefined,{maximumFractionDigits:1}).format(bytes/1048576)+' MB'}
 function stop(){if(posterJob){posterJob.abort();posterJob=null}if(posterURL){URL.revokeObjectURL(posterURL);posterURL=null}const media=$('screen').querySelector('video,audio');if(media){media.pause();media.removeAttribute('src');media.load()}$('screen').replaceChildren()}
-function requireLogin(){stop();$('workspace').hidden=true;$('login').hidden=false;$('token').focus()}
-async function api(url,options={}){const response=await fetch(url,{credentials:'same-origin',...options});if(!response.ok){let error='Could not complete the request. Try again.';try{error=(await response.json()).error||error}catch{}if(response.status===401)requireLogin();throw new Error(error)}return response.status===204?null:response.json()}
+async function api(url,options={}){const response=await fetch(url,{credentials:'same-origin',...options});if(!response.ok){let error='Could not complete the request. Try again.';try{error=(await response.json()).error||error}catch{}throw new Error(error)}return response.status===204?null:response.json()}
 async function loadPoster(item,video){
  const controller=new AbortController();posterJob=controller;
  try{for(let attempt=0;attempt<5;attempt++){
@@ -53,13 +48,12 @@ function choose(item){stop();current=item;document.querySelectorAll('#files butt
  else if(item.mime_type.startsWith('audio/')){element=document.createElement('audio');element.controls=true;element.preload='metadata'}
  else if(item.mime_type.startsWith('image/')){element=document.createElement('img');element.alt=item.name}
  else{element=document.createElement('p');element.className='placeholder';element.textContent='Preview is unavailable for this file type. Download the original to open it.'}
- if(element.tagName!=='P'){element.src=item.stream_url;element.addEventListener('error',async()=>{if(current?.id!==item.id)return;let text='Could not play or display this file. Your browser may not support its format. Try downloading the original.';try{const response=await fetch(item.stream_url,{method:'HEAD',credentials:'same-origin'});if(response.status===401){requireLogin();text='Your viewing session expired. Connect again to continue.'}else if(!response.ok){text='The stored file is unavailable. Refresh the uploads and try again.'}}catch{text='Could not reach the server. Check your connection and try again.'}message(text,true)})}
+ if(element.tagName!=='P'){element.src=item.stream_url;element.addEventListener('error',async()=>{if(current?.id!==item.id)return;let text='Could not play or display this file. Your browser may not support its format. Try downloading the original.';try{const response=await fetch(item.stream_url,{method:'HEAD',credentials:'same-origin'});if(!response.ok){text='The stored file is unavailable. Refresh the uploads and try again.'}}catch{text='Could not reach the server. Check your connection and try again.'}message(text,true)})}
  $('screen').append(element);if(element.tagName==='VIDEO'&&item.thumbnail_url)loadPoster(item,element);message('');
 }
 function render(){const list=$('files');list.replaceChildren();for(const item of items){const li=document.createElement('li');const button=document.createElement('button');button.type='button';button.dataset.id=item.id;button.setAttribute('aria-current',String(current?.id===item.id));const name=document.createElement('span');name.className='filename';name.textContent=item.name;const detail=document.createElement('span');detail.className='details';detail.textContent=item.mime_type+' · '+size(item.size_bytes);button.append(name,detail);button.addEventListener('click',()=>choose(item));li.append(button);list.append(li)}$('count').textContent=items.length+' upload'+(items.length===1?'':'s');$('more').hidden=next===null;if(!items.length){stop();$('name').hidden=true;$('meta').textContent='';$('download').hidden=true;const empty=document.createElement('p');empty.className='placeholder';empty.textContent='No uploads yet. Upload a file with the test upload endpoint, then refresh.';$('screen').append(empty)}}
-async function load(append=false){$('refresh').disabled=true;$('more').disabled=true;message('Loading uploads…');try{const result=await api(base+(append?'?offset='+next:''));items=append?items.concat(result.items):result.items;next=result.next_offset;$('workspace').hidden=false;$('login').hidden=true;render();if(items.length&&!append){choose(items.find(item=>item.id===(requested||current?.id))||items[0])}message('')}catch(error){message(error.message,true)}finally{$('refresh').disabled=false;$('more').disabled=false}}
-$('login').addEventListener('submit',async event=>{event.preventDefault();$('connect').disabled=true;try{await api(base+'/session',{method:'POST',headers:{'X-S3-Test-Token':$('token').value}});$('token').value='';await load()}catch(error){message(error.message,true)}finally{$('token').value='';$('connect').disabled=false}});
-$('refresh').addEventListener('click',()=>load());$('more').addEventListener('click',()=>load(true));$('disconnect').addEventListener('click',async()=>{try{await api(base+'/session',{method:'DELETE'});items=[];current=null;requireLogin();message('Disconnected.')}catch(error){message(error.message,true)}});
+async function load(append=false){$('refresh').disabled=true;$('more').disabled=true;message('Loading uploads…');try{const result=await api(base+(append?'?offset='+next:''));items=append?items.concat(result.items):result.items;next=result.next_offset;$('workspace').hidden=false;render();if(items.length&&!append){choose(items.find(item=>item.id===(requested||current?.id))||items[0])}message('')}catch(error){message(error.message,true)}finally{$('refresh').disabled=false;$('more').disabled=false}}
+$('refresh').addEventListener('click',()=>load());$('more').addEventListener('click',()=>load(true));
 load();
 </script>
 </body>
